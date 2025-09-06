@@ -1,0 +1,15 @@
+# Ignore environment variables
+.env
+
+# Ignore Python cache & build files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+
+# Virtual environment folders
+venv/
+ENV/
+

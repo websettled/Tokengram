@@ -1,0 +1,123 @@
+import os
+import io
+import asyncio
+from datetime import datetime
+from dotenv import load_dotenv
+
+from pycoingecko import CoinGeckoAPI
+import matplotlib.pyplot as plt
+
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+
+# Load .env
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN not set in .env")
+
+# API clients
+cg = CoinGeckoAPI()
+
+# ----------------- Helpers -----------------
+async def find_coin_id(symbol: str) -> str | None:
+    symbol = symbol.lower()
+    coins = await asyncio.to_thread(cg.get_coins_list)
+    for c in coins:
+        if c.get("symbol", "").lower() == symbol:
+            return c.get("id")
+    return None
+
+async def fetch_price_usd(coin_id: str) -> float | None:
+    res = await asyncio.to_thread(cg.get_price, ids=coin_id, vs_currencies="usd")
+    return res.get(coin_id, {}).get("usd")
+
+async def fetch_market_chart(coin_id: str, days: int = 7):
+    return await asyncio.to_thread(cg.get_coin_market_chart_by_id, coin_id, "usd", days)
+
+def plot_prices_to_bytes(prices, symbol: str):
+    times = [datetime.fromtimestamp(p[0]/1000) for p in prices]
+    vals = [p[1] for p in prices]
+    plt.figure(figsize=(8,4))
+    plt.plot(times, vals)
+    plt.title(f"{symbol.upper()} price (USD)")
+    plt.xlabel("Time")
+    plt.ylabel("Price (USD)")
+    plt.grid(True)
+    buf = io.BytesIO()
+    plt.tight_layout()
+    plt.savefig(buf, format="png")
+    plt.close()
+    buf.seek(0)
+    return buf
+
+# ----------------- Handlers -----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Hi! I'm PriceBot.\nCommands:\n"
+        "/price <SYMBOL>  — get price (e.g., /price BTC)\n"
+        "/chart <SYMBOL> [days] — price chart (days default 7)"
+    )
+
+async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        return await update.message.reply_text("Usage: /price <SYMBOL>  e.g. /price BTC")
+
+    symbol = context.args[0]
+    # send a single loading message
+    msg = await update.message.reply_text("Looking up coin id...")
+
+    coin_id = await find_coin_id(symbol)
+    if not coin_id:
+        return await msg.edit_text(f"Could not find coin with symbol '{symbol}'.")
+
+    await msg.edit_text(f"Fetching price for {coin_id}...")
+    price = await fetch_price_usd(coin_id)
+    if price is None:
+        return await msg.edit_text("Price not available.")
+
+    # replace loading message with final price
+    await msg.edit_text(f"{symbol.upper()} — ${price:,}")
+
+async def chart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        return await update.message.reply_text("Usage: /chart <SYMBOL> [days]\nExample: /chart ETH 14")
+
+    symbol = context.args[0]
+    days = 7
+    if len(context.args) > 1:
+        try:
+            days = int(context.args[1])
+        except:
+            days = 7
+
+    msg = await update.message.reply_text(f"Finding coin for {symbol}...")
+
+    coin_id = await find_coin_id(symbol)
+    if not coin_id:
+        return await msg.edit_text(f"Could not find coin with symbol '{symbol}'.")
+
+    await msg.edit_text(f"Fetching {days}-day market data for {coin_id}...")
+    data = await fetch_market_chart(coin_id, days)
+    prices = data.get("prices", [])
+    if not prices:
+        return await msg.edit_text("No price history available.")
+
+    img_buf = await asyncio.to_thread(plot_prices_to_bytes, prices, symbol)
+    # send chart as new message
+    await update.message.reply_photo(photo=img_buf, caption=f"{symbol.upper()} — last {days} days")
+    # delete loading message
+    await msg.delete()
+
+# ----------------- Main -----------------
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("price", price_cmd))
+    app.add_handler(CommandHandler("chart", chart_cmd))
+    print("Bot is starting (polling)...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
+
