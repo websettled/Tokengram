@@ -71,4 +71,48 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await msg.edit_text(f"❌ Could not find coin with symbol '{symbol}'.")
 
     await msg.edit_text(f"Fetching price for {coin_id}...")
-    price = await fetch_price_usd(coin
+    price = await fetch_price_usd(coin_id)
+    if price is None:
+        return await msg.edit_text("⚠️ Price not available.")
+
+    await msg.edit_text(f"{symbol.upper()} — ${price:,}")
+
+async def chart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        return await update.message.reply_text("Usage: /chart <SYMBOL> [days]\nExample: /chart ETH 14")
+
+    symbol = context.args[0]
+    days = 7
+    if len(context.args) > 1:
+        try:
+            days = int(context.args[1])
+        except:
+            days = 7
+
+    msg = await update.message.reply_text(f"Finding coin for {symbol}...")
+
+    coin_id = await find_coin_id(symbol)
+    if not coin_id:
+        return await msg.edit_text(f"❌ Could not find coin with symbol '{symbol}'.")
+
+    await msg.edit_text(f"Fetching {days}-day market data for {coin_id}...")
+    data = await fetch_market_chart(coin_id, days)
+    prices = data.get("prices", [])
+    if not prices:
+        return await msg.edit_text("⚠️ No price history available.")
+
+    img_buf = await asyncio.to_thread(plot_prices_to_bytes, prices, symbol)
+    await update.message.reply_photo(photo=img_buf, caption=f"{symbol.upper()} — last {days} days")
+    await msg.delete()
+
+# ----------------- Main -----------------
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("price", price_cmd))
+    app.add_handler(CommandHandler("chart", chart_cmd))
+    print("Bot is starting (polling)...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
